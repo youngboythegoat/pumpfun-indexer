@@ -51,7 +51,6 @@ def save_coin(coin_data):
         conn.close()
 
 def get_coin_details(mint):
-    """Get coin data from Pump.fun frontend API"""
     try:
         r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
         if r.status_code == 200:
@@ -61,7 +60,6 @@ def get_coin_details(mint):
     return None
 
 def get_ipfs_metadata(uri):
-    """Try to fetch full metadata from IPFS"""
     if not uri or not uri.startswith("https://"):
         return None
     try:
@@ -73,15 +71,12 @@ def get_ipfs_metadata(uri):
     return None
 
 def enrich_coin_data(data):
-    """Merge data from Pump.fun API + IPFS metadata"""
     mint = data.get("mint")
     if not mint:
         return data
 
-    # First try Pump.fun API
     details = get_coin_details(mint) or {}
 
-    # Fallback to IPFS if twitter is missing
     twitter = details.get("twitter") or data.get("twitter")
     description = details.get("description") or data.get("description")
 
@@ -100,14 +95,18 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started (with IPFS fallback)...")
+    print("Indexer started (improved WebSocket)...")
     create_table()
 
     uri = "wss://pumpdev.io/ws"
 
     while True:
         try:
-            async with websockets.connect(uri) as ws:
+            async with websockets.connect(
+                uri,
+                ping_interval=20,      # Send ping every 20 seconds
+                ping_timeout=20        # Wait 20 seconds for pong
+            ) as ws:
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 print("Connected to WebSocket")
 
@@ -126,7 +125,7 @@ async def indexer():
                         print(f"Message error: {e}")
 
         except Exception as e:
-            print(f"WebSocket error: {e}. Reconnecting...")
+            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
