@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Only sync to your testing server for fast development
+# Only sync to your testing server
 GUILD_IDS = [
-    1519304243532529775   # Testing server only
+    1519304243532529775
 ]
 
 intents = discord.Intents.default()
@@ -98,7 +98,7 @@ def get_recent_coins(minutes: int = 10):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        since = datetime.utcnow() - timedelta(minutes=minutes)
+        since = datetime.now(datetime.UTC) - timedelta(minutes=minutes)
         cur.execute("""
             SELECT mint, name, symbol, twitter, created_at
             FROM pumpfun_coins
@@ -180,7 +180,13 @@ async def check_for_new_coins():
         recent_coins = get_recent_coins(minutes=10)
         
         for coin in recent_coins:
-            subscribers = get_subscribers_for_tweet(coin.get("twitter") or "")
+            # Extract tweet ID from the coin's twitter field
+            coin_tweet_id = extract_tweet_id(coin.get("twitter") or "")
+            if not coin_tweet_id:
+                continue
+
+            # Get subscribers for this specific tweet ID
+            subscribers = get_subscribers_for_tweet(coin_tweet_id)
             
             for sub in subscribers:
                 user_id = sub["user_id"]
@@ -301,7 +307,6 @@ async def stopnotify(interaction: discord.Interaction, tweet: str):
 async def on_ready():
     print(f"Bot is online as {bot.user}")
     
-    # Sync commands only to your testing server
     for guild_id in GUILD_IDS:
         guild = discord.Object(id=guild_id)
         await tree.sync(guild=guild)
