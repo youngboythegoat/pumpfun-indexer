@@ -4,14 +4,21 @@ import json
 import websockets
 import psycopg2
 import requests
+import random
+import time
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-HELIUS_API_KEY = "1d048ec7-f627-49aa-81dc-6ef329fc8028"
-
-PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
+
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/"
+    }
 
 def create_table():
     conn = get_db_connection()
@@ -55,7 +62,11 @@ def save_coin(coin_data):
 
 def get_coin_details(mint):
     try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
+        r = requests.get(
+            f"https://frontend-api-v3.pump.fun/coins/{mint}",
+            headers=get_headers(),
+            timeout=8
+        )
         if r.status_code == 200:
             return r.json()
     except:
@@ -97,76 +108,73 @@ def enrich_coin_data(data):
         "description": description
     }
 
+async def poll_latest_coins():
+    """Fallback polling when WebSocket is down"""
+    print("Polling mode active (WebSocket down)...")
+    while True:
+        try:
+            r = requests.get(
+                "https://frontend-api-v3.pump.fun/coins/latest",
+                headers=get_headers(),
+                timeout=8
+            )
+            if r.status_code == 200:
+                coin = r.json()
+                if coin and coin.get("mint"):
+                    enriched = enrich_coin_data(coin)
+                    save_coin(enriched)
+                    print(f"[Poll] Saved: {enriched.get('name')} ({enriched.get('mint')})")
+            await asyncio.sleep(8)  # Poll every 8 seconds
+        except Exception as e:
+            print(f"Polling error: {e}")
+            await asyncio.sleep(10)
+
 async def indexer():
-    print("Indexer started with Helius (transactionSubscribe + debug)...")
+    print("Indexer started (WebSocket + fallback)...")
     create_table()
 
-    uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+    uri = "wss://pumpdev.io/ws"
+    delay = 5
+    max_delay = 60
+    websocket_healthy = True
 
     while True:
         try:
-            async with websockets.connect(uri) as ws:
-                subscribe_msg = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "transactionSubscribe",
-                    "params": [
-                        {
-                            "commitment": "confirmed",
-                            "filter": {
-                                "mentions": [PUMP_FUN_PROGRAM_ID]
-                            }
-                        }
-                    ]
-                }
-                await ws.send(json.dumps(subscribe_msg))
-                print("Subscribed to Pump.fun via Helius")
+            async with websockets.connect(
+                uri,
+                open_timeout=20,
+                ping_interval=20,
+                ping_timeout=25
+            ) as ws:
+                await ws.send(json.dumps({"method": "subscribeNewToken"}))
+                print("Connected to pumpdev.io WebSocket")
+                delay = 5
+                websocket_healthy = True
 
                 async for message in ws:
                     try:
                         data = json.loads(message)
-
-                        if data.get("method") != "transactionNotification":
-                            continue
-
-                        result = data.get("params", {}).get("result", {})
-                        transaction = result.get("transaction", {})
-                        meta = transaction.get("meta", {})
-
-                        # Debug: Print transaction structure occasionally
-                        # print(json.dumps(transaction, indent=2)[:500])  # Uncomment for debugging
-
-                        found_mint = None
-
-                        # Check postTokenBalances
-                        for balance in meta.get("postTokenBalances", []):
-                            mint = balance.get("mint")
-                            if mint and mint.endswith("pump"):
-                                found_mint = mint
-                                break
-
-                        # Check accountKeys for pump addresses
-                        if not found_mint:
-                            account_keys = transaction.get("message", {}).get("accountKeys", [])
-                            for key in account_keys:
-                                if isinstance(key, str) and key.endswith("pump"):
-                                    found_mint = key
-                                    break
-
-                        if found_mint:
-                            enriched = enrich_coin_data({"mint": found_mint})
-                            save_coin(enriched)
-                            print(f"Saved: {enriched.get('name')} ({found_mint})")
-                        else:
-                            # Debug: Print when we receive a transaction but can't find mint
-                            print("Transaction received but no pump mint found")
-
+                        if data.get("txType") == "create":
+                            mint = data.get("mint")
+                            if mint:
+                                enriched = enrich_coin_data(data)
+                                save_coin(enriched)
+                                print(f"Saved: {enriched.get('name')} ({mint})")
                     except Exception as e:
                         print(f"Message error: {e}")
 
         except Exception as e:
-            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
+            print(f"WebSocket error: {e}. Switching to polling mode...")
+            websocket_healthy = False
+
+            # Run polling as fallback
+            try:
+                await asyncio.wait_for(poll_latest_coins(), timeout=30)
+            except asyncio.TimeoutError:
+                print("Polling timeout, trying WebSocket again...")
+
+            await asyncio.sleep(delay)
+            delay = min(delay * 2 + random.uniform(0, 3), max_delay)
 
 if __name__ == "__main__":
     asyncio.run(indexer())
