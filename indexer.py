@@ -4,8 +4,6 @@ import json
 import websockets
 import psycopg2
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 HELIUS_API_KEY = "1d048ec7-f627-49aa-81dc-6ef329fc8028"
@@ -99,30 +97,8 @@ def enrich_coin_data(data):
         "description": description
     }
 
-def get_helius_transaction(signature):
-    """Fetch transaction with retry logic"""
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-
-    url = f"https://api.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "getTransaction",
-        "params": [signature, {"commitment": "confirmed", "maxSupportedTransactionVersion": 0}]
-    }
-
-    try:
-        r = session.post(url, json=payload, timeout=15)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        print(f"Helius API error: {e}")
-    return None
-
 async def indexer():
-    print("Indexer started with Helius + retry...")
+    print("Indexer started with Helius (transactionSubscribe + debug)...")
     create_table()
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
@@ -133,10 +109,14 @@ async def indexer():
                 subscribe_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "logsSubscribe",
+                    "method": "transactionSubscribe",
                     "params": [
-                        {"mentions": [PUMP_FUN_PROGRAM_ID]},
-                        {"commitment": "confirmed"}
+                        {
+                            "commitment": "confirmed",
+                            "filter": {
+                                "mentions": [PUMP_FUN_PROGRAM_ID]
+                            }
+                        }
                     ]
                 }
                 await ws.send(json.dumps(subscribe_msg))
@@ -146,31 +126,40 @@ async def indexer():
                     try:
                         data = json.loads(message)
 
-                        if data.get("method") != "logsNotification":
+                        if data.get("method") != "transactionNotification":
                             continue
 
                         result = data.get("params", {}).get("result", {})
-                        value = result.get("value", {})
-                        logs = value.get("logs", [])
-                        signature = value.get("signature")
+                        transaction = result.get("transaction", {})
+                        meta = transaction.get("meta", {})
 
-                        for log in logs:
-                            if "Program log: Instruction: Create" in log and signature:
-                                print(f"Create detected. Fetching tx: {signature}")
+                        # Debug: Print transaction structure occasionally
+                        # print(json.dumps(transaction, indent=2)[:500])  # Uncomment for debugging
 
-                                tx_data = get_helius_transaction(signature)
-                                if tx_data and tx_data.get("result"):
-                                    meta = tx_data["result"].get("meta", {})
-                                    for balance in meta.get("postTokenBalances", []):
-                                        mint = balance.get("mint")
-                                        if mint and mint.endswith("pump"):
-                                            enriched = enrich_coin_data({"mint": mint})
-                                            save_coin(enriched)
-                                            print(f"Saved: {enriched.get('name')} ({mint})")
-                                            break
-                                else:
-                                    print("Failed to fetch transaction from Helius")
+                        found_mint = None
+
+                        # Check postTokenBalances
+                        for balance in meta.get("postTokenBalances", []):
+                            mint = balance.get("mint")
+                            if mint and mint.endswith("pump"):
+                                found_mint = mint
                                 break
+
+                        # Check accountKeys for pump addresses
+                        if not found_mint:
+                            account_keys = transaction.get("message", {}).get("accountKeys", [])
+                            for key in account_keys:
+                                if isinstance(key, str) and key.endswith("pump"):
+                                    found_mint = key
+                                    break
+
+                        if found_mint:
+                            enriched = enrich_coin_data({"mint": found_mint})
+                            save_coin(enriched)
+                            print(f"Saved: {enriched.get('name')} ({found_mint})")
+                        else:
+                            # Debug: Print when we receive a transaction but can't find mint
+                            print("Transaction received but no pump mint found")
 
                     except Exception as e:
                         print(f"Message error: {e}")
