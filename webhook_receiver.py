@@ -11,6 +11,16 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
+def coin_exists(mint):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM pumpfun_coins WHERE mint = %s", (mint,))
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
+        conn.close()
+
 def save_coin(coin_data):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -79,6 +89,10 @@ async def helius_webhook(request: Request):
                     for change in account.get("tokenBalanceChanges", []):
                         mint = change.get("mint")
                         if mint and mint.endswith("pump"):
+                            # Skip if already exists (WebSocket probably caught it first)
+                            if coin_exists(mint):
+                                continue
+
                             enriched = enrich_coin_data(mint)
                             was_saved = save_coin(enriched)
                             if was_saved:
