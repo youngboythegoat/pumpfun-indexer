@@ -96,26 +96,26 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started (improved stability)...")
+    print("Indexer started...")
     create_table()
 
     uri = "wss://pumpdev.io/ws"
-    base_delay = 5
+    delay = 5          # Starting delay
     max_delay = 60
 
     while True:
         try:
             async with websockets.connect(
                 uri,
-                ping_interval=15,      # More aggressive ping
-                ping_timeout=25,
+                open_timeout=30,       # Timeout for opening handshake
+                ping_interval=20,
+                ping_timeout=30,
                 close_timeout=10
             ) as ws:
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 print("Connected to WebSocket")
 
-                # Reset delay on successful connection
-                delay = base_delay
+                delay = 5  # Reset delay after successful connection
 
                 async for message in ws:
                     try:
@@ -135,8 +135,7 @@ async def indexer():
             print(f"WebSocket error: {e}. Reconnecting in {delay} seconds...")
             await asyncio.sleep(delay)
             # Exponential backoff with jitter
-            delay = min(delay * 2, max_delay)
-            delay += random.uniform(0, 3)
+            delay = min(delay * 2 + random.uniform(0, 3), max_delay)
 
 if __name__ == "__main__":
     asyncio.run(indexer())
