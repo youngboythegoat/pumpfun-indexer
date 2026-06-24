@@ -50,17 +50,8 @@ def save_coin(coin_data):
         cur.close()
         conn.close()
 
-def get_coin_details(mint):
-    try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
-        if r.status_code == 200:
-            return r.json()
-    except:
-        pass
-    return None
-
 async def indexer():
-    print("Starting WebSocket Indexer...")
+    print("Starting WebSocket Indexer (DEBUG MODE)...")
     create_table()
 
     uri = "wss://pumpdev.io/ws"
@@ -72,26 +63,31 @@ async def indexer():
                 print("Connected to pumpdev.io WebSocket")
 
                 async for message in ws:
+                    print("RAW MESSAGE:", message)   # ← Debug line
+
                     try:
                         data = json.loads(message)
-                        if data.get("method") != "newToken":
-                            continue
 
-                        mint = data.get("mint")
-                        if not mint:
-                            continue
+                        # Only process newToken events
+                        if data.get("method") == "newToken":
+                            mint = data.get("mint")
+                            if mint:
+                                # Try to enrich with more data
+                                try:
+                                    details = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=6).json()
+                                except:
+                                    details = data
 
-                        # Get full details
-                        details = get_coin_details(mint) or data
-
-                        save_coin(details)
-                        print(f"Saved: {details.get('name')} ({mint})")
+                                save_coin(details)
+                                print(f"Saved: {details.get('name')} ({mint})")
+                        else:
+                            print("Other message received:", data.get("method"))
 
                     except Exception as e:
-                        print(f"Message error: {e}")
+                        print(f"Message processing error: {e}")
 
         except Exception as e:
-            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
+            print(f"WebSocket error: {e}. Reconnecting...")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
