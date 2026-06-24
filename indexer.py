@@ -4,6 +4,7 @@ import json
 import websockets
 import psycopg2
 import requests
+import random
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -95,20 +96,26 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started (improved WebSocket)...")
+    print("Indexer started (improved stability)...")
     create_table()
 
     uri = "wss://pumpdev.io/ws"
+    base_delay = 5
+    max_delay = 60
 
     while True:
         try:
             async with websockets.connect(
                 uri,
-                ping_interval=20,      # Send ping every 20 seconds
-                ping_timeout=20        # Wait 20 seconds for pong
+                ping_interval=15,      # More aggressive ping
+                ping_timeout=25,
+                close_timeout=10
             ) as ws:
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 print("Connected to WebSocket")
+
+                # Reset delay on successful connection
+                delay = base_delay
 
                 async for message in ws:
                     try:
@@ -125,8 +132,11 @@ async def indexer():
                         print(f"Message error: {e}")
 
         except Exception as e:
-            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
+            print(f"WebSocket error: {e}. Reconnecting in {delay} seconds...")
+            await asyncio.sleep(delay)
+            # Exponential backoff with jitter
+            delay = min(delay * 2, max_delay)
+            delay += random.uniform(0, 3)
 
 if __name__ == "__main__":
     asyncio.run(indexer())
