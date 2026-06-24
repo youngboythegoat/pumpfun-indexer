@@ -98,7 +98,7 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started with Helius (transactionSubscribe)...")
+    print("Indexer started with Helius (improved parsing)...")
     create_table()
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
@@ -120,7 +120,7 @@ async def indexer():
                     ]
                 }
                 await ws.send(json.dumps(subscribe_msg))
-                print("Subscribed to Pump.fun transactions via Helius")
+                print("Subscribed to Pump.fun via Helius")
 
                 async for message in ws:
                     try:
@@ -133,15 +133,27 @@ async def indexer():
                         transaction = result.get("transaction", {})
                         meta = transaction.get("meta", {})
 
-                        # Try to find the new mint from postTokenBalances
-                        post_balances = meta.get("postTokenBalances", [])
-                        for balance in post_balances:
+                        found_mint = None
+
+                        # Method 1: Check postTokenBalances
+                        for balance in meta.get("postTokenBalances", []):
                             mint = balance.get("mint")
                             if mint and mint.endswith("pump"):
-                                enriched = enrich_coin_data({"mint": mint})
-                                save_coin(enriched)
-                                print(f"Saved: {enriched.get('name')} ({mint})")
+                                found_mint = mint
                                 break
+
+                        # Method 2: Check accountKeys for newly created pump addresses
+                        if not found_mint:
+                            account_keys = transaction.get("message", {}).get("accountKeys", [])
+                            for key in account_keys:
+                                if isinstance(key, str) and key.endswith("pump"):
+                                    found_mint = key
+                                    break
+
+                        if found_mint:
+                            enriched = enrich_coin_data({"mint": found_mint})
+                            save_coin(enriched)
+                            print(f"Saved: {enriched.get('name')} ({found_mint})")
 
                     except Exception as e:
                         print(f"Message error: {e}")
