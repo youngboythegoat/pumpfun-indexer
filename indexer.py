@@ -69,7 +69,7 @@ async def indexer():
                         data = json.loads(message)
 
                         # Only process newToken events
-                        if data.get("method") == "newToken":
+                        if data.get("txType") == "create":
                             mint = data.get("mint")
                             if mint:
                                 # Try to enrich with more data
