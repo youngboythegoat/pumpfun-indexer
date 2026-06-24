@@ -1,12 +1,9 @@
 from fastapi import FastAPI, Request
 import uvicorn
-import logging
 import psycopg2
 import requests
 import os
-
-# Disable Uvicorn access logs
-logging.getLogger("uvicorn.access").handlers = []
+import time
 
 app = FastAPI(title="Helius Webhook Receiver for Pump.fun")
 
@@ -14,14 +11,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
-
-def get_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Origin": "https://pump.fun",
-        "Referer": "https://pump.fun/"
-    }
 
 def save_coin(coin_data):
     if not coin_data.get("name"):
@@ -52,17 +41,27 @@ def save_coin(coin_data):
         cur.close()
         conn.close()
 
-def get_coin_details(mint):
-    try:
-        r = requests.get(
-            f"https://frontend-api-v3.pump.fun/coins/{mint}",
-            headers=get_headers(),
-            timeout=8
-        )
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        print(f"Error fetching coin details for {mint}: {e}")
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/"
+    }
+
+def get_coin_details(mint, retries=2):
+    for attempt in range(retries):
+        try:
+            r = requests.get(
+                f"https://frontend-api-v3.pump.fun/coins/{mint}",
+                headers=get_headers(),
+                timeout=8
+            )
+            if r.status_code == 200:
+                return r.json()
+            time.sleep(0.5)
+        except:
+            time.sleep(0.5)
     return None
 
 def get_ipfs_metadata(uri):
@@ -77,7 +76,9 @@ def get_ipfs_metadata(uri):
     return None
 
 def enrich_coin_data(mint):
-    details = get_coin_details(mint) or {}
+    details = get_coin_details(mint)
+    if not details:
+        return {"mint": mint}  # Return minimal data so we don't lose the mint
 
     twitter = details.get("twitter")
     description = details.get("description")
@@ -108,11 +109,14 @@ async def helius_webhook(request: Request):
                     for change in account.get("tokenBalanceChanges", []):
                         mint = change.get("mint")
                         if mint and mint.endswith("pump"):
-                            print(f"New Pump.fun token detected: {mint}")
                             enriched = enrich_coin_data(mint)
                             was_saved = save_coin(enriched)
                             if was_saved:
                                 print(f"Saved new coin: {enriched.get('name')} ({mint})")
+                            else:
+                                # Only log detection if we couldn't save it
+                                if enriched.get("name"):
+                                    print(f"Already exists or failed to save: {mint}")
         return {"status": "processed"}
 
     except Exception as e:
