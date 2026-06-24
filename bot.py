@@ -3,7 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ==================== CONFIG ====================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -98,7 +98,7 @@ def get_recent_coins(minutes: int = 10):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        since = datetime.now(datetime.UTC) - timedelta(minutes=minutes)
+        since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
         cur.execute("""
             SELECT mint, name, symbol, twitter, created_at
             FROM pumpfun_coins
@@ -180,12 +180,10 @@ async def check_for_new_coins():
         recent_coins = get_recent_coins(minutes=10)
         
         for coin in recent_coins:
-            # Extract tweet ID from the coin's twitter field
             coin_tweet_id = extract_tweet_id(coin.get("twitter") or "")
             if not coin_tweet_id:
                 continue
 
-            # Get subscribers for this specific tweet ID
             subscribers = get_subscribers_for_tweet(coin_tweet_id)
             
             for sub in subscribers:
