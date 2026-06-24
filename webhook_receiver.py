@@ -1,8 +1,12 @@
 from fastapi import FastAPI, Request
 import uvicorn
+import logging
 import psycopg2
 import requests
 import os
+
+# Disable Uvicorn access logs
+logging.getLogger("uvicorn.access").handlers = []
 
 app = FastAPI(title="Helius Webhook Receiver for Pump.fun")
 
@@ -11,9 +15,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/"
+    }
+
 def save_coin(coin_data):
     if not coin_data.get("name"):
-        return False  # Don't save if we couldn't enrich the data
+        return False
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -42,11 +54,15 @@ def save_coin(coin_data):
 
 def get_coin_details(mint):
     try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
+        r = requests.get(
+            f"https://frontend-api-v3.pump.fun/coins/{mint}",
+            headers=get_headers(),
+            timeout=8
+        )
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        print(f"Error fetching coin details for {mint}: {e}")
     return None
 
 def get_ipfs_metadata(uri):
@@ -92,6 +108,7 @@ async def helius_webhook(request: Request):
                     for change in account.get("tokenBalanceChanges", []):
                         mint = change.get("mint")
                         if mint and mint.endswith("pump"):
+                            print(f"New Pump.fun token detected: {mint}")
                             enriched = enrich_coin_data(mint)
                             was_saved = save_coin(enriched)
                             if was_saved:
