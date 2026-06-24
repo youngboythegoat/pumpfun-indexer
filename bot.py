@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Only sync to your testing server for fast development
+GUILD_IDS = [
+    1519304243532529775   # Testing server only
+]
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -195,16 +200,13 @@ async def check_for_new_coins():
 
                 try:
                     if channel_id:
-                        # Send in the chosen channel and mention the user
                         channel = bot.get_channel(channel_id)
                         if channel:
                             await channel.send(content=f"<@{user_id}>", embed=embed)
                         else:
-                            # Fallback to DM if channel not found
                             user = await bot.fetch_user(user_id)
                             await user.send(embed=embed)
                     else:
-                        # Send via DM
                         user = await bot.fetch_user(user_id)
                         await user.send(embed=embed)
 
@@ -298,8 +300,12 @@ async def stopnotify(interaction: discord.Interaction, tweet: str):
 @bot.event
 async def on_ready():
     print(f"Bot is online as {bot.user}")
-    await tree.sync()
-    print("Slash commands synced.")
+    
+    # Sync commands only to your testing server
+    for guild_id in GUILD_IDS:
+        guild = discord.Object(id=guild_id)
+        await tree.sync(guild=guild)
+        print(f"Commands synced to testing server ({guild_id})")
     
     if not check_for_new_coins.is_running():
         check_for_new_coins.start()
