@@ -4,9 +4,11 @@ import json
 import websockets
 import psycopg2
 import requests
-import random
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+HELIUS_API_KEY = "1d048ec7-f627-49aa-81dc-6ef329fc8028"
+
+PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -96,46 +98,60 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started...")
+    print("Indexer started with Helius...")
     create_table()
 
-    uri = "wss://pumpdev.io/ws"
-    delay = 5          # Starting delay
-    max_delay = 60
+    uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
     while True:
         try:
-            async with websockets.connect(
-                uri,
-                open_timeout=30,       # Timeout for opening handshake
-                ping_interval=20,
-                ping_timeout=30,
-                close_timeout=10
-            ) as ws:
-                await ws.send(json.dumps({"method": "subscribeNewToken"}))
-                print("Connected to WebSocket")
-
-                delay = 5  # Reset delay after successful connection
+            async with websockets.connect(uri) as ws:
+                # Subscribe to transactions involving the Pump.fun program
+                subscribe_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "transactionSubscribe",
+                    "params": [
+                        {
+                            "commitment": "confirmed",
+                            "filter": {
+                                "mentions": [PUMP_FUN_PROGRAM_ID]
+                            }
+                        }
+                    ]
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                print("Subscribed to Pump.fun program via Helius")
 
                 async for message in ws:
                     try:
                         data = json.loads(message)
 
-                        if data.get("txType") == "create":
-                            mint = data.get("mint")
-                            if mint:
-                                enriched = enrich_coin_data(data)
+                        if data.get("method") != "transactionNotification":
+                            continue
+
+                        result = data.get("params", {}).get("result", {})
+                        transaction = result.get("transaction", {})
+
+                        # Try to extract the new mint address from the transaction
+                        meta = transaction.get("meta", {})
+                        post_token_balances = meta.get("postTokenBalances", [])
+
+                        for balance in post_token_balances:
+                            mint = balance.get("mint")
+                            if mint and mint.endswith("pump"):
+                                # We found a potential new Pump.fun token
+                                enriched = enrich_coin_data({"mint": mint})
                                 save_coin(enriched)
                                 print(f"Saved: {enriched.get('name')} ({mint})")
+                                break
 
                     except Exception as e:
-                        print(f"Message error: {e}")
+                        print(f"Message parsing error: {e}")
 
         except Exception as e:
-            print(f"WebSocket error: {e}. Reconnecting in {delay} seconds...")
-            await asyncio.sleep(delay)
-            # Exponential backoff with jitter
-            delay = min(delay * 2 + random.uniform(0, 3), max_delay)
+            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(indexer())
