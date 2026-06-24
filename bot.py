@@ -20,15 +20,16 @@ def get_db_connection():
 
 # ==================== DATABASE FUNCTIONS ====================
 
-def add_subscription(user_id: int, tweet_id: str):
+def add_subscription(user_id: int, tweet_id: str, channel_id: int = None):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO user_subscriptions (user_id, tweet_id)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id, tweet_id) DO NOTHING;
-        """, (user_id, tweet_id))
+            INSERT INTO user_subscriptions (user_id, tweet_id, channel_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, tweet_id) DO UPDATE 
+            SET channel_id = EXCLUDED.channel_id;
+        """, (user_id, tweet_id, channel_id))
         conn.commit()
     finally:
         cur.close()
@@ -39,11 +40,11 @@ def get_user_subscriptions(user_id: int):
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT tweet_id FROM user_subscriptions 
+            SELECT tweet_id, channel_id FROM user_subscriptions 
             WHERE user_id = %s 
             ORDER BY created_at DESC
         """, (user_id,))
-        return [row[0] for row in cur.fetchall()]
+        return [{"tweet_id": row[0], "channel_id": row[1]} for row in cur.fetchall()]
     finally:
         cur.close()
         conn.close()
@@ -89,7 +90,6 @@ def search_coins_by_tweet(tweet_id: str):
         conn.close()
 
 def get_recent_coins(minutes: int = 10):
-    """Get coins created in the last X minutes"""
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -117,15 +117,15 @@ def get_recent_coins(minutes: int = 10):
         cur.close()
         conn.close()
 
-def get_subscribed_users(tweet_id: str):
+def get_subscribers_for_tweet(tweet_id: str):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT user_id FROM user_subscriptions 
+            SELECT user_id, channel_id FROM user_subscriptions 
             WHERE tweet_id = %s
         """, (tweet_id,))
-        return [row[0] for row in cur.fetchall()]
+        return [{"user_id": row[0], "channel_id": row[1]} for row in cur.fetchall()]
     finally:
         cur.close()
         conn.close()
@@ -175,38 +175,44 @@ async def check_for_new_coins():
         recent_coins = get_recent_coins(minutes=10)
         
         for coin in recent_coins:
-            # Check all tweet_ids that could match this coin
-            # For simplicity, we check subscriptions for this specific tweet if it exists
-            # A better version would check all subscriptions, but this is efficient enough
+            subscribers = get_subscribers_for_tweet(coin.get("twitter") or "")
             
-            # Get all subscriptions (we'll optimize later)
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT user_id, tweet_id FROM user_subscriptions")
-            subscriptions = cur.fetchall()
-            cur.close()
-            conn.close()
+            for sub in subscribers:
+                user_id = sub["user_id"]
+                channel_id = sub["channel_id"]
 
-            for user_id, tweet_id in subscriptions:
-                if tweet_id in (coin.get("twitter") or "") or tweet_id in (coin.get("description") or ""):
-                    if not has_been_notified(user_id, coin["mint"]):
-                        try:
+                if has_been_notified(user_id, coin["mint"]):
+                    continue
+
+                embed = discord.Embed(
+                    title=f"New Coin Found: {coin['name']} (${coin['symbol']})",
+                    description=f"A new coin matching your notification was just deployed!",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="Mint", value=f"`{coin['mint']}`", inline=False)
+                embed.add_field(name="View on pump.fun", value=coin['pump_link'], inline=False)
+                embed.set_footer(text="marv's pumpfun alpha tweet search")
+
+                try:
+                    if channel_id:
+                        # Send in the chosen channel and mention the user
+                        channel = bot.get_channel(channel_id)
+                        if channel:
+                            await channel.send(content=f"<@{user_id}>", embed=embed)
+                        else:
+                            # Fallback to DM if channel not found
                             user = await bot.fetch_user(user_id)
-                            embed = discord.Embed(
-                                title=f"New Coin Found: {coin['name']} (${coin['symbol']})",
-                                description=f"A new coin matching your notification for tweet `{tweet_id}` was just deployed!",
-                                color=discord.Color.green()
-                            )
-                            embed.add_field(name="Mint", value=f"`{coin['mint']}`", inline=False)
-                            embed.add_field(name="View on pump.fun", value=coin['pump_link'], inline=False)
-                            embed.set_footer(text="marv's pumpfun alpha tweet search")
-
                             await user.send(embed=embed)
-                            record_notification(user_id, coin["mint"])
-                            print(f"Sent notification to {user_id} for {coin['mint']}")
+                    else:
+                        # Send via DM
+                        user = await bot.fetch_user(user_id)
+                        await user.send(embed=embed)
 
-                        except Exception as e:
-                            print(f"Failed to send DM to {user_id}: {e}")
+                    record_notification(user_id, coin["mint"])
+                    print(f"Sent notification to {user_id} for {coin['mint']}")
+
+                except Exception as e:
+                    print(f"Failed to send notification to {user_id}: {e}")
 
     except Exception as e:
         print(f"Notification task error: {e}")
@@ -236,18 +242,29 @@ async def find(interaction: discord.Interaction, tweet: str):
     await interaction.followup.send(message)
 
 @tree.command(name="notify", description="Get notified when a coin matching this tweet appears")
-@app_commands.describe(tweet="Tweet URL or Tweet ID")
-async def notify(interaction: discord.Interaction, tweet: str):
+@app_commands.describe(
+    tweet="Tweet URL or Tweet ID",
+    channel="Channel where you want notifications (optional - leave empty for DM)"
+)
+async def notify(interaction: discord.Interaction, tweet: str, channel: discord.TextChannel = None):
     tweet_id = extract_tweet_id(tweet)
     if not tweet_id:
         await interaction.response.send_message("Invalid tweet URL or ID.", ephemeral=True)
         return
 
-    add_subscription(interaction.user.id, tweet_id)
-    await interaction.response.send_message(
-        f"✅ You will now be notified via DM when a coin matching this tweet appears.\nTweet ID: `{tweet_id}`",
-        ephemeral=True
-    )
+    channel_id = channel.id if channel else None
+    add_subscription(interaction.user.id, tweet_id, channel_id)
+
+    if channel:
+        await interaction.response.send_message(
+            f"✅ You will be notified in {channel.mention} when a coin matching this tweet appears.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"✅ You will be notified via **DM** when a coin matching this tweet appears.\nTweet ID: `{tweet_id}`",
+            ephemeral=True
+        )
 
 @tree.command(name="mynotifications", description="See all tweets you're subscribed to")
 async def mynotifications(interaction: discord.Interaction):
@@ -257,8 +274,9 @@ async def mynotifications(interaction: discord.Interaction):
         return
 
     message = "**Your active notifications:**\n"
-    for tweet_id in subscriptions:
-        message += f"• `{tweet_id}`\n"
+    for sub in subscriptions:
+        ch = f" → <#{sub['channel_id']}>" if sub['channel_id'] else " (DM)"
+        message += f"• `{sub['tweet_id']}`{ch}\n"
     await interaction.response.send_message(message, ephemeral=True)
 
 @tree.command(name="stopnotify", description="Stop getting notifications for a tweet")
