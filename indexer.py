@@ -53,13 +53,25 @@ def save_coin(coin_data):
         cur.close()
         conn.close()
 
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/"
+    }
+
 def get_coin_details(mint):
     try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
+        r = requests.get(
+            f"https://frontend-api-v3.pump.fun/coins/{mint}",
+            headers=get_headers(),
+            timeout=8
+        )
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        print(f"Error fetching coin details: {e}")
     return None
 
 def get_ipfs_metadata(uri):
@@ -106,22 +118,17 @@ async def indexer():
     while True:
         try:
             async with websockets.connect(uri) as ws:
-                # Subscribe to logs from Pump.fun program
                 subscribe_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "logsSubscribe",
                     "params": [
-                        {
-                            "mentions": [PUMP_FUN_PROGRAM_ID]
-                        },
-                        {
-                            "commitment": "confirmed"
-                        }
+                        {"mentions": [PUMP_FUN_PROGRAM_ID]},
+                        {"commitment": "confirmed"}
                     ]
                 }
                 await ws.send(json.dumps(subscribe_msg))
-                print("Subscribed to Pump.fun logs via Helius")
+                print("Subscribed to Pump.fun program via Helius")
 
                 async for message in ws:
                     try:
@@ -133,26 +140,26 @@ async def indexer():
                         result = data.get("params", {}).get("result", {})
                         logs = result.get("value", {}).get("logs", [])
 
-                        # Look for "Program log: Instruction: Create"
                         for log in logs:
                             if "Program log: Instruction: Create" in log:
-                                # Try to extract mint from the transaction
-                                # For simplicity, we'll enrich using recent coins approach
-                                # A better version would parse the transaction signature
-                                print("Create instruction detected. Checking recent coins...")
+                                print("Create instruction detected. Fetching latest coin...")
 
-                                # As a fallback, check the most recent coin from Pump.fun API
                                 try:
-                                    recent = requests.get(
+                                    r = requests.get(
                                         "https://frontend-api-v3.pump.fun/coins/latest",
-                                        timeout=5
-                                    ).json()
-                                    if recent and recent.get("mint"):
-                                        enriched = enrich_coin_data(recent)
-                                        save_coin(enriched)
-                                        print(f"Saved: {enriched.get('name')} ({enriched.get('mint')})")
+                                        headers=get_headers(),
+                                        timeout=8
+                                    )
+                                    if r.status_code == 200:
+                                        recent = r.json()
+                                        if recent and recent.get("mint"):
+                                            enriched = enrich_coin_data(recent)
+                                            save_coin(enriched)
+                                            print(f"Saved: {enriched.get('name')} ({enriched.get('mint')})")
+                                    else:
+                                        print(f"Pump.fun API returned status: {r.status_code}")
                                 except Exception as e:
-                                    print(f"Error checking recent coin: {e}")
+                                    print(f"Error fetching recent coin: {e}")
                                 break
 
                     except Exception as e:
