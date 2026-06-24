@@ -1,7 +1,9 @@
 import os
-import time
-import requests
+import asyncio
+import json
+import websockets
 import psycopg2
+import requests
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -48,59 +50,50 @@ def save_coin(coin_data):
         cur.close()
         conn.close()
 
-def get_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Origin": "https://pump.fun",
-        "Referer": "https://pump.fun/"
-    }
-
-def get_latest_coin():
-    try:
-        r = requests.get("https://frontend-api-v3.pump.fun/coins/latest", 
-                         headers=get_headers(), timeout=10)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            print(f"Latest coin status: {r.status_code}")
-    except Exception as e:
-        print(f"Error fetching latest: {e}")
-    return None
-
 def get_coin_details(mint):
     try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", 
-                         headers=get_headers(), timeout=10)
+        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
         if r.status_code == 200:
             return r.json()
-    except Exception as e:
-        print(f"Error fetching details: {e}")
+    except:
+        pass
     return None
 
-def main():
-    print("Indexer started...")
+async def indexer():
+    print("Starting WebSocket Indexer...")
     create_table()
 
-    seen = set()
+    uri = "wss://pumpdev.io/ws"
 
     while True:
         try:
-            latest = get_latest_coin()
-            if latest:
-                mint = latest.get("mint")
-                if mint and mint not in seen:
-                    seen.add(mint)
-                    details = get_coin_details(mint) or latest
-                    save_coin(details)
-                    print(f"Saved: {details.get('name')} ({mint})")
+            async with websockets.connect(uri) as ws:
+                await ws.send(json.dumps({"method": "subscribeNewToken"}))
+                print("Connected to pumpdev.io WebSocket")
 
-            time.sleep(4)
+                async for message in ws:
+                    try:
+                        data = json.loads(message)
+                        if data.get("method") != "newToken":
+                            continue
+
+                        mint = data.get("mint")
+                        if not mint:
+                            continue
+
+                        # Get full details
+                        details = get_coin_details(mint) or data
+
+                        save_coin(details)
+                        print(f"Saved: {details.get('name')} ({mint})")
+
+                    except Exception as e:
+                        print(f"Message error: {e}")
 
         except Exception as e:
-            print(f"Loop error: {e}")
-            time.sleep(5)
+            print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(indexer())
     main()
