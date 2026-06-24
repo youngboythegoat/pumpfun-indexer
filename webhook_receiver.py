@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request
 import uvicorn
-import json
 import psycopg2
 import requests
 import os
@@ -19,7 +18,8 @@ def save_coin(coin_data):
         cur.execute("""
             INSERT INTO pumpfun_coins (mint, name, symbol, twitter, description)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (mint) DO NOTHING;
+            ON CONFLICT (mint) DO NOTHING
+            RETURNING mint;
         """, (
             coin_data.get("mint"),
             coin_data.get("name"),
@@ -27,9 +27,12 @@ def save_coin(coin_data):
             coin_data.get("twitter"),
             coin_data.get("description")
         ))
+        inserted = cur.fetchone()
         conn.commit()
+        return inserted is not None  # True if actually inserted
     except Exception as e:
         print(f"DB Error: {e}")
+        return False
     finally:
         cur.close()
         conn.close()
@@ -79,7 +82,6 @@ async def helius_webhook(request: Request):
     try:
         payload = await request.json()
 
-        # Helius sends an array of transactions
         if isinstance(payload, list):
             for tx in payload:
                 account_data = tx.get("accountData", [])
@@ -87,11 +89,10 @@ async def helius_webhook(request: Request):
                     for change in account.get("tokenBalanceChanges", []):
                         mint = change.get("mint")
                         if mint and mint.endswith("pump"):
-                            print(f"New Pump.fun token detected: {mint}")
                             enriched = enrich_coin_data(mint)
-                            save_coin(enriched)
-                            print(f"Saved to database: {enriched.get('name')} ({mint})")
-
+                            was_saved = save_coin(enriched)
+                            if was_saved:
+                                print(f"Saved new coin: {enriched.get('name')} ({mint})")
         return {"status": "processed"}
 
     except Exception as e:
