@@ -98,7 +98,7 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started with Helius (improved parsing)...")
+    print("Indexer started with Helius (instruction parsing)...")
     create_table()
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
@@ -133,22 +133,32 @@ async def indexer():
                         transaction = result.get("transaction", {})
                         meta = transaction.get("meta", {})
 
+                        message_data = transaction.get("message", {})
+                        account_keys = message_data.get("accountKeys", [])
+                        instructions = message_data.get("instructions", [])
+
                         found_mint = None
 
-                        # Method 1: Check postTokenBalances
-                        for balance in meta.get("postTokenBalances", []):
-                            mint = balance.get("mint")
-                            if mint and mint.endswith("pump"):
-                                found_mint = mint
-                                break
+                        # Look through instructions for Pump.fun create
+                        for ix in instructions:
+                            program_id_index = ix.get("programIdIndex")
+                            if program_id_index is None:
+                                continue
 
-                        # Method 2: Check accountKeys for newly created pump addresses
-                        if not found_mint:
-                            account_keys = transaction.get("message", {}).get("accountKeys", [])
-                            for key in account_keys:
-                                if isinstance(key, str) and key.endswith("pump"):
-                                    found_mint = key
-                                    break
+                            # Get the actual program ID
+                            if program_id_index < len(account_keys):
+                                program_id = account_keys[program_id_index]
+
+                                if program_id == PUMP_FUN_PROGRAM_ID:
+                                    # This is a Pump.fun instruction
+                                    accounts = ix.get("accounts", [])
+                                    if len(accounts) > 0:
+                                        mint_index = accounts[0]
+                                        if mint_index < len(account_keys):
+                                            mint = account_keys[mint_index]
+                                            if isinstance(mint, str) and mint.endswith("pump"):
+                                                found_mint = mint
+                                                break
 
                         if found_mint:
                             enriched = enrich_coin_data({"mint": found_mint})
