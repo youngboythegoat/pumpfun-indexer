@@ -3,7 +3,6 @@ import uvicorn
 import psycopg2
 import requests
 import os
-import time
 
 app = FastAPI(title="Helius Webhook Receiver for Pump.fun")
 
@@ -13,9 +12,6 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def save_coin(coin_data):
-    if not coin_data.get("name"):
-        return False
-
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -49,19 +45,17 @@ def get_headers():
         "Referer": "https://pump.fun/"
     }
 
-def get_coin_details(mint, retries=2):
-    for attempt in range(retries):
-        try:
-            r = requests.get(
-                f"https://frontend-api-v3.pump.fun/coins/{mint}",
-                headers=get_headers(),
-                timeout=8
-            )
-            if r.status_code == 200:
-                return r.json()
-            time.sleep(0.5)
-        except:
-            time.sleep(0.5)
+def get_coin_details(mint):
+    try:
+        r = requests.get(
+            f"https://frontend-api-v3.pump.fun/coins/{mint}",
+            headers=get_headers(),
+            timeout=8
+        )
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
     return None
 
 def get_ipfs_metadata(uri):
@@ -76,9 +70,7 @@ def get_ipfs_metadata(uri):
     return None
 
 def enrich_coin_data(mint):
-    details = get_coin_details(mint)
-    if not details:
-        return {"mint": mint}  # Return minimal data so we don't lose the mint
+    details = get_coin_details(mint) or {}
 
     twitter = details.get("twitter")
     description = details.get("description")
@@ -111,12 +103,14 @@ async def helius_webhook(request: Request):
                         if mint and mint.endswith("pump"):
                             enriched = enrich_coin_data(mint)
                             was_saved = save_coin(enriched)
+
                             if was_saved:
-                                print(f"Saved new coin: {enriched.get('name')} ({mint})")
+                                name = enriched.get("name") or "Unknown"
+                                print(f"Saved new coin: {name} ({mint})")
                             else:
-                                # Only log detection if we couldn't save it
-                                if enriched.get("name"):
-                                    print(f"Already exists or failed to save: {mint}")
+                                # Still detected but already exists or enrichment failed
+                                print(f"Detected (already exists or partial): {mint}")
+
         return {"status": "processed"}
 
     except Exception as e:
