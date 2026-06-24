@@ -2,9 +2,7 @@ import os
 import time
 import requests
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
-# Database connection from Railway
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
@@ -26,7 +24,7 @@ def create_table():
     conn.commit()
     cur.close()
     conn.close()
-    print("Table created or already exists.")
+    print("Table ready.")
 
 def save_coin(coin_data):
     conn = get_db_connection()
@@ -45,51 +43,64 @@ def save_coin(coin_data):
         ))
         conn.commit()
     except Exception as e:
-        print(f"Error saving coin: {e}")
+        print(f"DB Error: {e}")
     finally:
         cur.close()
         conn.close()
 
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/"
+    }
+
 def get_latest_coin():
     try:
-        r = requests.get("https://frontend-api-v3.pump.fun/coins/latest", timeout=10)
+        r = requests.get("https://frontend-api-v3.pump.fun/coins/latest", 
+                         headers=get_headers(), timeout=10)
         if r.status_code == 200:
             return r.json()
+        else:
+            print(f"Latest coin status: {r.status_code}")
     except Exception as e:
-        print(f"Error fetching latest coin: {e}")
+        print(f"Error fetching latest: {e}")
     return None
 
 def get_coin_details(mint):
     try:
-        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=10)
+        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", 
+                         headers=get_headers(), timeout=10)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
-        print(f"Error fetching coin details: {e}")
+        print(f"Error fetching details: {e}")
     return None
 
 def main():
-    print("Starting Pump.fun Indexer...")
+    print("Indexer started...")
     create_table()
 
-    seen_mints = set()
+    seen = set()
 
     while True:
         try:
             latest = get_latest_coin()
             if latest:
                 mint = latest.get("mint")
-                if mint and mint not in seen_mints:
-                    seen_mints.add(mint)
+                if mint and mint not in seen:
+                    seen.add(mint)
                     details = get_coin_details(mint) or latest
                     save_coin(details)
-                    print(f"Saved coin: {details.get('name')} ({mint})")
+                    print(f"Saved: {details.get('name')} ({mint})")
 
-            time.sleep(3)  # Check every 3 seconds
+            time.sleep(4)
 
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            print(f"Loop error: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
+    main()
     main()
