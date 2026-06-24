@@ -12,6 +12,9 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def save_coin(coin_data):
+    if not coin_data.get("name"):
+        return False  # Don't save if we couldn't enrich the data
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -29,7 +32,7 @@ def save_coin(coin_data):
         ))
         inserted = cur.fetchone()
         conn.commit()
-        return inserted is not None  # True if actually inserted
+        return inserted is not None
     except Exception as e:
         print(f"DB Error: {e}")
         return False
@@ -104,4 +107,4 @@ async def health_check():
     return {"status": "Helius Webhook Receiver is running"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
