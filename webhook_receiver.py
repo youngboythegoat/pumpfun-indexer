@@ -39,7 +39,7 @@ def save_coin(coin_data):
 
 def get_headers():
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
         "Origin": "https://pump.fun",
         "Referer": "https://pump.fun/"
@@ -58,35 +58,14 @@ def get_coin_details(mint):
         pass
     return None
 
-def get_ipfs_metadata(uri):
-    if not uri or not uri.startswith("https://"):
-        return None
-    try:
-        r = requests.get(uri, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except:
-        pass
-    return None
-
 def enrich_coin_data(mint):
     details = get_coin_details(mint) or {}
-
-    twitter = details.get("twitter")
-    description = details.get("description")
-
-    if not twitter and details.get("uri"):
-        ipfs_data = get_ipfs_metadata(details["uri"])
-        if ipfs_data:
-            twitter = ipfs_data.get("twitter")
-            description = ipfs_data.get("description")
-
     return {
         "mint": mint,
         "name": details.get("name"),
         "symbol": details.get("symbol"),
-        "twitter": twitter,
-        "description": description
+        "twitter": details.get("twitter"),
+        "description": details.get("description")
     }
 
 @app.post("/webhook")
@@ -96,21 +75,15 @@ async def helius_webhook(request: Request):
 
         if isinstance(payload, list):
             for tx in payload:
-                account_data = tx.get("accountData", [])
-                for account in account_data:
+                for account in tx.get("accountData", []):
                     for change in account.get("tokenBalanceChanges", []):
                         mint = change.get("mint")
                         if mint and mint.endswith("pump"):
                             enriched = enrich_coin_data(mint)
                             was_saved = save_coin(enriched)
-
                             if was_saved:
                                 name = enriched.get("name") or "Unknown"
                                 print(f"Saved new coin: {name} ({mint})")
-                            else:
-                                # Still detected but already exists or enrichment failed
-                                print(f"Detected (already exists or partial): {mint}")
-
         return {"status": "processed"}
 
     except Exception as e:
@@ -122,4 +95,4 @@ async def health_check():
     return {"status": "Helius Webhook Receiver is running"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False, log_level="warning")
