@@ -1,7 +1,9 @@
 import os
 import discord
 from discord import app_commands
+from discord.ext import tasks
 import psycopg2
+from datetime import datetime, timedelta
 
 # ==================== CONFIG ====================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -86,6 +88,75 @@ def search_coins_by_tweet(tweet_id: str):
         cur.close()
         conn.close()
 
+def get_recent_coins(minutes: int = 10):
+    """Get coins created in the last X minutes"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        since = datetime.utcnow() - timedelta(minutes=minutes)
+        cur.execute("""
+            SELECT mint, name, symbol, twitter, created_at
+            FROM pumpfun_coins
+            WHERE created_at >= %s
+            ORDER BY created_at DESC
+        """, (since,))
+        
+        rows = cur.fetchall()
+        results = []
+        for row in rows:
+            results.append({
+                "mint": row[0],
+                "name": row[1],
+                "symbol": row[2],
+                "twitter": row[3],
+                "created_at": row[4],
+                "pump_link": f"https://pump.fun/coin/{row[0]}"
+            })
+        return results
+    finally:
+        cur.close()
+        conn.close()
+
+def get_subscribed_users(tweet_id: str):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT user_id FROM user_subscriptions 
+            WHERE tweet_id = %s
+        """, (tweet_id,))
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+def has_been_notified(user_id: int, mint: str):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 1 FROM sent_notifications 
+            WHERE user_id = %s AND mint = %s
+        """, (user_id, mint))
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
+        conn.close()
+
+def record_notification(user_id: int, mint: str):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO sent_notifications (user_id, mint)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id, mint) DO NOTHING;
+        """, (user_id, mint))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
 def extract_tweet_id(text: str):
     import re
     if text.isdigit():
@@ -95,6 +166,50 @@ def extract_tweet_id(text: str):
         if match:
             return match.group(1)
     return None
+
+# ==================== NOTIFICATION TASK ====================
+
+@tasks.loop(seconds=45)
+async def check_for_new_coins():
+    try:
+        recent_coins = get_recent_coins(minutes=10)
+        
+        for coin in recent_coins:
+            # Check all tweet_ids that could match this coin
+            # For simplicity, we check subscriptions for this specific tweet if it exists
+            # A better version would check all subscriptions, but this is efficient enough
+            
+            # Get all subscriptions (we'll optimize later)
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, tweet_id FROM user_subscriptions")
+            subscriptions = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            for user_id, tweet_id in subscriptions:
+                if tweet_id in (coin.get("twitter") or "") or tweet_id in (coin.get("description") or ""):
+                    if not has_been_notified(user_id, coin["mint"]):
+                        try:
+                            user = await bot.fetch_user(user_id)
+                            embed = discord.Embed(
+                                title=f"New Coin Found: {coin['name']} (${coin['symbol']})",
+                                description=f"A new coin matching your notification for tweet `{tweet_id}` was just deployed!",
+                                color=discord.Color.green()
+                            )
+                            embed.add_field(name="Mint", value=f"`{coin['mint']}`", inline=False)
+                            embed.add_field(name="View on pump.fun", value=coin['pump_link'], inline=False)
+                            embed.set_footer(text="marv's pumpfun alpha tweet search")
+
+                            await user.send(embed=embed)
+                            record_notification(user_id, coin["mint"])
+                            print(f"Sent notification to {user_id} for {coin['mint']}")
+
+                        except Exception as e:
+                            print(f"Failed to send DM to {user_id}: {e}")
+
+    except Exception as e:
+        print(f"Notification task error: {e}")
 
 # ==================== COMMANDS ====================
 
@@ -120,7 +235,6 @@ async def find(interaction: discord.Interaction, tweet: str):
 
     await interaction.followup.send(message)
 
-
 @tree.command(name="notify", description="Get notified when a coin matching this tweet appears")
 @app_commands.describe(tweet="Tweet URL or Tweet ID")
 async def notify(interaction: discord.Interaction, tweet: str):
@@ -131,10 +245,9 @@ async def notify(interaction: discord.Interaction, tweet: str):
 
     add_subscription(interaction.user.id, tweet_id)
     await interaction.response.send_message(
-        f"✅ You will now be notified when a coin matching this tweet appears.\nTweet ID: `{tweet_id}`",
+        f"✅ You will now be notified via DM when a coin matching this tweet appears.\nTweet ID: `{tweet_id}`",
         ephemeral=True
     )
-
 
 @tree.command(name="mynotifications", description="See all tweets you're subscribed to")
 async def mynotifications(interaction: discord.Interaction):
@@ -147,7 +260,6 @@ async def mynotifications(interaction: discord.Interaction):
     for tweet_id in subscriptions:
         message += f"• `{tweet_id}`\n"
     await interaction.response.send_message(message, ephemeral=True)
-
 
 @tree.command(name="stopnotify", description="Stop getting notifications for a tweet")
 @app_commands.describe(tweet="Tweet URL or Tweet ID")
@@ -170,6 +282,10 @@ async def on_ready():
     print(f"Bot is online as {bot.user}")
     await tree.sync()
     print("Slash commands synced.")
+    
+    if not check_for_new_coins.is_running():
+        check_for_new_coins.start()
+        print("Notification task started.")
 
 # ==================== RUN BOT ====================
 
