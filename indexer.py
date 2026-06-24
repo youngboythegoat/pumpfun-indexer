@@ -53,25 +53,13 @@ def save_coin(coin_data):
         cur.close()
         conn.close()
 
-def get_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Origin": "https://pump.fun",
-        "Referer": "https://pump.fun/"
-    }
-
 def get_coin_details(mint):
     try:
-        r = requests.get(
-            f"https://frontend-api-v3.pump.fun/coins/{mint}",
-            headers=get_headers(),
-            timeout=8
-        )
+        r = requests.get(f"https://frontend-api-v3.pump.fun/coins/{mint}", timeout=8)
         if r.status_code == 200:
             return r.json()
-    except Exception as e:
-        print(f"Error fetching coin details: {e}")
+    except:
+        pass
     return None
 
 def get_ipfs_metadata(uri):
@@ -110,7 +98,7 @@ def enrich_coin_data(data):
     }
 
 async def indexer():
-    print("Indexer started with Helius (logsSubscribe)...")
+    print("Indexer started with Helius (transactionSubscribe)...")
     create_table()
 
     uri = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
@@ -121,45 +109,38 @@ async def indexer():
                 subscribe_msg = {
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "logsSubscribe",
+                    "method": "transactionSubscribe",
                     "params": [
-                        {"mentions": [PUMP_FUN_PROGRAM_ID]},
-                        {"commitment": "confirmed"}
+                        {
+                            "commitment": "confirmed",
+                            "filter": {
+                                "mentions": [PUMP_FUN_PROGRAM_ID]
+                            }
+                        }
                     ]
                 }
                 await ws.send(json.dumps(subscribe_msg))
-                print("Subscribed to Pump.fun program via Helius")
+                print("Subscribed to Pump.fun transactions via Helius")
 
                 async for message in ws:
                     try:
                         data = json.loads(message)
 
-                        if data.get("method") != "logsNotification":
+                        if data.get("method") != "transactionNotification":
                             continue
 
                         result = data.get("params", {}).get("result", {})
-                        logs = result.get("value", {}).get("logs", [])
+                        transaction = result.get("transaction", {})
+                        meta = transaction.get("meta", {})
 
-                        for log in logs:
-                            if "Program log: Instruction: Create" in log:
-                                print("Create instruction detected. Fetching latest coin...")
-
-                                try:
-                                    r = requests.get(
-                                        "https://frontend-api-v3.pump.fun/coins/latest",
-                                        headers=get_headers(),
-                                        timeout=8
-                                    )
-                                    if r.status_code == 200:
-                                        recent = r.json()
-                                        if recent and recent.get("mint"):
-                                            enriched = enrich_coin_data(recent)
-                                            save_coin(enriched)
-                                            print(f"Saved: {enriched.get('name')} ({enriched.get('mint')})")
-                                    else:
-                                        print(f"Pump.fun API returned status: {r.status_code}")
-                                except Exception as e:
-                                    print(f"Error fetching recent coin: {e}")
+                        # Try to find the new mint from postTokenBalances
+                        post_balances = meta.get("postTokenBalances", [])
+                        for balance in post_balances:
+                            mint = balance.get("mint")
+                            if mint and mint.endswith("pump"):
+                                enriched = enrich_coin_data({"mint": mint})
+                                save_coin(enriched)
+                                print(f"Saved: {enriched.get('name')} ({mint})")
                                 break
 
                     except Exception as e:
